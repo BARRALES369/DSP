@@ -1,111 +1,69 @@
-import asyncio
-import websockets
-import json
-import matplotlib.pyplot as plt
-from collections import deque
 import numpy as np
-from scipy.fft import fft
-import socket
+import pandas as pd
 
-# Colas para almacenar los datos del acelerómetro
-acceleration_data = {'x': deque(maxlen=100), 'y': deque(maxlen=100), 'z': deque(maxlen=100)}
+# Parámetros
+num_datos_acumular = 25
+frecuencia_muestreo = 100  # Frecuencia de muestreo en Hz
 
-# Tamaño del paquete de datos del acelerómetro
-tamano_paquete = 25
+# Inicializar listas para acumular datos
+acelerometro_x = []
+acelerometro_y = []
 
-def graficar_fft_y_fases(fft_magnitud_x, fft_magnitud_y, fase_x, fase_y):
-    plt.figure(figsize=(12, 6))
+# Función para acumular datos del acelerómetro
+def acumular_datos_acelerometro(x, y):
+    acelerometro_x.extend(x)
+    acelerometro_y.extend(y)
 
-    plt.subplot(2, 1, 1)
-    plt.plot(fft_magnitud_x, label='FFT Magnitud X')
-    plt.plot(fft_magnitud_y, label='FFT Magnitud Y')
-    plt.title('FFT Magnitud')
-    plt.xlabel('Frecuencia')
-    plt.ylabel('Amplitud')
-    plt.legend()
+    # Verificar si tenemos suficientes datos acumulados
+    if len(acelerometro_x) >= num_datos_acumular:
+        # Procesar los últimos num_datos_acumular datos
+        procesar_datos()
 
-    plt.subplot(2, 1, 2)
-    plt.plot(fase_x, label='Fase X')
-    plt.plot(fase_y, label='Fase Y')
-    plt.title('Fase')
-    plt.xlabel('Frecuencia')
-    plt.ylabel('Fase (radianes)')
-    plt.legend()
+# Función para procesar los datos acumulados
+def procesar_datos():
+    # Calcular la FFT y la fase
+    fft_result = calcular_fft(acelerometro_x, acelerometro_y)
+    fase_result = calcular_fase(acelerometro_x, acelerometro_y)
 
-    plt.tight_layout()
-    plt.show()
+    # Crear DataFrames para los resultados
+    fft_dataframe = pd.DataFrame(fft_result, columns=['Frecuencia', 'Amplitud X', 'Amplitud Y'])
+    fase_dataframe = pd.DataFrame(fase_result, columns=['Frecuencia', 'Fase X', 'Fase Y'])
 
+    # Guardar los resultados en archivos CSV
+    fft_dataframe.to_csv('fft_result.csv', index=False)
+    fase_dataframe.to_csv('fase_result.csv', index=False)
 
-def calcular_fft_y_fases(paquete_datos):
-    # Calcular la FFT para cada eje
-    fft_result_x = fft(paquete_datos['x'])
-    fft_result_y = fft(paquete_datos['y'])
-    # Calcular la fase para cada eje
-    fase_x = np.angle(fft_result_x)
-    fase_y = np.angle(fft_result_y)
+    # Limpiar los datos acumulados
+    limpiar_datos()
 
-    return np.abs(fft_result_x), np.abs(fft_result_y), fase_x, fase_y
+# Función para calcular la FFT
+def calcular_fft(x, y):
+    datos_acelerometro = x + y
+    fft_result = np.fft.fft(datos_acelerometro)
+    frecuencias = np.fft.fftfreq(len(fft_result), d=1/frecuencia_muestreo)
+    amplitud_x = np.abs(fft_result.real)
+    amplitud_y = np.abs(fft_result.imag)
 
-def get_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        # doesn't even have to be reachable
-        s.connect(('10.255.255.255', 1))
-        IP = s.getsockname()[0]
-    except Exception:
-        IP = '127.0.0.1'
-    finally:
-        s.close()
-    return IP
+    # Devolver un array con las columnas 'Frecuencia', 'Amplitud X' y 'Amplitud Y'
+    return np.column_stack((frecuencias, amplitud_x, amplitud_y))
 
-hostname = socket.gethostname()
-IPAddr = get_ip()
-print("Your Computer Name is: " + hostname)
-print("Your Computer IP Address is: " + IPAddr)
-print(
-    "* Enter {0}:5000 in the app.\n* Press the 'Set IP Address' button.\n* Select the sensors to stream.\n* Update the 'update interval' by entering a value in ms.".format(IPAddr))
+# Función para calcular la fase
+def calcular_fase(x, y):
+    fase_x = np.angle(np.fft.fft(x))
+    fase_y = np.angle(np.fft.fft(y))
+    
+    # Devolver un array con las columnas 'Frecuencia', 'Fase X' y 'Fase Y'
+    return np.column_stack((frecuencias, fase_x, fase_y))
 
-async def echo(websocket, path):
-    async for message in websocket:
-        if path == '/accelerometer':
-            data = await websocket.recv()
-            print(data)
-            f = open("accelerometer.txt", "a")
-            f.write(data + "\n")
+# Función para limpiar los datos acumulados
+def limpiar_datos():
+    del acelerometro_x[:]
+    del acelerometro_y[:]
 
-            # Parseamos los datos del acelerómetro
-            parsed_data = json.loads(data)
-            x = parsed_data['x']
-            y = parsed_data['y']
-
-            # Almacenar los datos del acelerómetro en las colas
-            acceleration_data['x'].append(float(x))
-            acceleration_data['y'].append(float(y))
-
-            # Verificar si hemos acumulado suficientes datos para calcular la FFT
-            if len(acceleration_data['x']) == tamano_paquete:
-                # Crear el paquete de datos
-                paquete_datos = {'x': np.array(acceleration_data['x']), 'y': np.array(acceleration_data['y'])}
-
-                # Calcular la FFT y las fases utilizando la función
-                fft_magnitud_x, fft_magnitud_y, fase_x, fase_y = calcular_fft_y_fases(paquete_datos)
-
-                # Imprimir o utilizar los resultados según sea necesario
-                print("FFT Magnitud X:", fft_magnitud_x)
-                print("FFT Magnitud Y:", fft_magnitud_y)
-                print("Fase X:", fase_x)
-                print("Fase Y:", fase_y)
-
-                #graficar_fft_y_fases(fft_magnitud_x, fft_magnitud_y, fase_x, fase_y)
-
-                # Limpiar las colas después de procesar la FFT
-                acceleration_data['x'].clear()
-                acceleration_data['y'].clear()
-
-# Resto del código sin cambios...
-
-async def main():
-    async with websockets.serve(echo, '0.0.0.0', 5000, max_size=1_000_000_000):
-        await asyncio.Future()
-
-asyncio.run(main())
+# Ejemplo de uso
+# Supongamos que obtienes nuevos datos del acelerómetro en cada iteración
+# Puedes llamar a la función acumular_datos_acelerometro con tus nuevos datos
+# Aquí, por simplicidad, se usa una lista de ceros como datos de ejemplo
+acelerometro_nuevos_datos_x = [0.0] * num_datos_acumular
+acelerometro_nuevos_datos_y = [0.0] * num_datos_acumular
+acumular_datos_acelerometro(acelerometro_nuevos_datos_x, acelerometro_nuevos_datos_y)
