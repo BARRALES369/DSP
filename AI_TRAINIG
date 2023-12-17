@@ -1,0 +1,110 @@
+import os
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MultiLabelBinarizer
+import tensorflow as tf
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.callbacks import ModelCheckpoint
+
+# Ruta a la carpeta que contiene los archivos de fase y FFT
+carpeta = 'C:\\Users\\joaqu\\procesamiento de seales'
+
+# Definir las etiquetas
+etiquetas = ["detenido", "lento_derecha", "lento_izquierda", "rapido_derecha", "rapido_izquierda"]
+
+# Obtener una lista de archivos de fase y FFT
+archivos_fase = [archivo for archivo in os.listdir(carpeta) if archivo.startswith('fase_result')]
+archivos_fft = [archivo for archivo in os.listdir(carpeta) if archivo.startswith('fft_result')]
+
+# Asegurarse de que haya la misma cantidad de archivos FFT y fase
+if len(archivos_fase) != len(archivos_fft):
+    raise ValueError("La cantidad de archivos de fase no coincide con la cantidad de archivos FFT.")
+
+# Parámetros de entrenamiento
+epochs = 10
+
+# Ciclo a través de cada par de archivos FFT y fase
+for nombre_fase, nombre_fft in zip(archivos_fase, archivos_fft):
+    # Extraer la etiqueta del nombre del archivo de fase
+    etiqueta = nombre_fase.split('_')[-1].split('.')[0]
+
+    # Ruta completa de los archivos
+    ruta_fase = os.path.join(carpeta, nombre_fase)
+    ruta_fft = os.path.join(carpeta, nombre_fft)
+
+    print(f"Trabajando con archivos: {nombre_fase} y {nombre_fft}")
+    print(f"Etiqueta: {etiqueta}")
+
+    # Cargar datos de fase desde el archivo correspondiente
+    fase_data = pd.read_csv(ruta_fase)
+
+    # Cargar datos de FFT desde el archivo correspondiente
+    fft_data = pd.read_csv(ruta_fft)
+
+    # Agregar la columna de etiquetas al conjunto de datos
+    fase_data['Etiqueta'] = etiqueta
+    fft_data['Etiqueta'] = etiqueta
+
+    # Fusionar los dos conjuntos de datos en base a la columna "Frecuencia"
+    merged_data = pd.merge(fase_data, fft_data, on='Frecuencia')
+
+    # Asumo que tienes columnas 'Fase X', 'Fase Y', 'Amplitud X', 'Amplitud Y' y 'Etiqueta_x'
+    X = merged_data[['Fase X', 'Fase Y', 'Amplitud X', 'Amplitud Y']].values
+
+    # Acceder a la columna 'Etiqueta_x'
+    y = merged_data['Etiqueta_x'].apply(lambda x: [x]).values
+
+    # Codificar las etiquetas usando MultiLabelBinarizer
+    label_binarizer = MultiLabelBinarizer(classes=etiquetas)
+    y_encoded = label_binarizer.fit_transform(y)
+
+    # Define el número de etiquetas
+    num_etiquetas = len(etiquetas)
+
+    # Divide los datos en conjuntos de entrenamiento y prueba
+    X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42)
+
+    # Construir el modelo
+    model = Sequential()
+    model.add(Dense(64, input_dim=4, activation='relu'))
+    model.add(Dense(num_etiquetas, activation='softmax'))  # Cambiado a softmax para clasificación multiclase
+
+    # Compilar el modelo
+    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+
+    # Intentar cargar un modelo previamente guardado
+    try:
+        # Agregar la capa de entrada al modelo antes de cargar los pesos
+        model.add(Dense(1, input_dim=4))
+        model = load_model(f'modelo_{etiqueta}.h5')
+        print(f'Modelo {etiqueta} cargado exitosamente. Continuando el entrenamiento.')
+    except (OSError, ImportError):
+        print(f'No se encontró un modelo previo para {etiqueta}. Entrenando un nuevo modelo.')
+
+    # Utilizar ModelCheckpoint para guardar el modelo con la mejor precisión en validación
+    checkpoint = ModelCheckpoint(f'modelo_{etiqueta}.h5', monitor='val_accuracy', save_best_only=True)
+
+    # Función de callback personalizada para imprimir un mensaje cuando se realiza un checkpoint
+    class CustomCallback(tf.keras.callbacks.Callback):
+        def on_epoch_end(self, epoch, logs=None):
+            if logs is None:
+                logs = {}
+            if 'val_accuracy' in logs:
+                print(f"Checkpoint para {etiqueta}: Época {epoch + 1}, Precisión en validación: {logs['val_accuracy']}")
+
+    custom_callback = CustomCallback()
+
+    # Entrenar el modelo
+    model.fit(X_train, y_train, epochs=epochs, batch_size=32, validation_split=0.2, callbacks=[checkpoint, custom_callback])
+
+    # Evaluar el modelo
+    accuracy = model.evaluate(X_test, y_test)
+    print(f'Accuracy para {etiqueta}: {accuracy[1]}')
+
+    # Mostrar las etiquetas predichas por el modelo
+    predicciones = model.predict(X_test)
+    etiquetas_predichas = [etiquetas[i] for i in tf.argmax(predicciones, axis=1).numpy()]
+    print(f'Etiquetas predichas para {etiqueta}: {etiquetas_predichas}')
+
+# Fin del ciclo
